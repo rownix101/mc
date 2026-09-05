@@ -1,0 +1,25 @@
+[package]
+name = "mc"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "mc"
+path = "src/lib.rs"
+
+[dependencies]
+fastnoise-lite = { version = "1.1", features = ["f64", "std"] }
+rayon = "1.10"
+image = "0.25"
+wgpu = "30.0.1"
+winit = "0.30.13"
+glam = "0.30"
+pollster = "0.4"
+bytemuck = { version = "1.23", features = ["derive"] }
+egui = { version = "0.36.1", optional = true }
+egui-wgpu = { version = "0.36", optional = true }
+egui-winit = { version = "0.36", optional = true }
+
+[features]
+default = ["debug-ui"]
+debug-ui = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
