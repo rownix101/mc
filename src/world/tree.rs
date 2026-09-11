@@ -4,25 +4,11 @@
 //! 挑候选位置、输出 `Vec<Tree>`. 调用方把 `Tree::blocks()` 写入已有柱即可.
 //! 不引入新的 Chunk 结构.
 //!
-//! 橡树形状 (经典 Minecraft 风格):
-//!
-//! ```text
-//!        L L L
-//!      L L L L L        ← 顶层 (y+1): 十字 3x3
-//!      L L L L L        ← 中层 (y+0): 5x5 切四角
-//!        L L L          ← 底层 (y-1): 5x5 切四角 + 十字
-//!          T            ← 树干
-//!          T
-//!          T
-//!          T
-//!        G G G          ← 草地表面
-//! ```
-//!
-//! - 树干高 4--5 格, 由位置 hash 决定.
-//! - 树冠在树干顶部上下分布, 半径 2, 高度 3.
-//! - 放置条件: 草方块表面 (高度 `SEA_LEVEL < h <= SEA_LEVEL + 10`, 非沙滩/水/高山).
-//! - 最小间距: 任意两棵树 trunk 水平距离 >= 3 (防树冠重叠).
-//! - 概率: `density` 默认 0.04 (~4% 的草地格).
+//! 橡树使用确定性的位置 hash 变化: 树干高 4--7 格, 树冠 3--4 层,
+//! 冠幅沿两个轴独立选择半径 1 或 2, 外沿有局部缺口; 高树有短的根部加粗.
+//! 所有方块保持在主干水平半径 2 格内, 与逐列装饰和 LOD 查询边界一致.
+//! 放置条件: 草地表面 (SEA_LEVEL+2 < h <= SEA_LEVEL+10).
+//! 最小主干间距 3 格 (树冠仍可重叠), 默认候选概率 0.04.
 
 use super::block::Block;
 use super::continent::{SEA_LEVEL, WorldHeightmap};
@@ -50,26 +36,39 @@ impl Tree {
             out.push((self.x, y, self.z, Block::OakLog));
         }
 
-        let canopy_center = top + self.height - 1; // 树冠中心 y
-        for dy in -1..=1 {
+        let shape = hash64(self.x, self.height, self.z, 0x715e_ed0a);
+        let radius_x = if shape & 3 == 0 { 1_i64 } else { 2 };
+        let radius_z = if (shape >> 2) & 3 == 0 { 1_i64 } else { 2 };
+        let bottom = if self.height >= 6 { -2_i64 } else { -1 };
+        let gaps = 0.10 + ((shape >> 4) & 3) as f64 * 0.05;
+        // Tall trees get a short buttress, still within the existing query halo.
+        if self.height >= 6 {
+            let (dx, dz) = match (shape >> 6) & 3 {
+                0 => (1, 0),
+                1 => (-1, 0),
+                2 => (0, 1),
+                _ => (0, -1),
+            };
+            out.push((self.x + dx, top, self.z + dz, Block::OakLog));
+            if self.height == 7 {
+                out.push((self.x + dx, top + 1, self.z + dz, Block::OakLog));
+            }
+        }
+        let canopy_center = top + self.height - 1;
+        for dy in bottom..=1_i64 {
             let y = canopy_center + dy;
-            for dx in -2..=2i64 {
-                for dz in -2..=2i64 {
-                    // 切四角.
-                    if dx.abs() == 2 && dz.abs() == 2 {
+            let rx = if dy == 1 { 1 } else { radius_x };
+            let rz = if dy == 1 { 1 } else { radius_z };
+            for dx in -rx..=rx {
+                for dz in -rz..=rz {
+                    if dx == 0 && dz == 0 && dy <= 0 {
                         continue;
                     }
-                    let dist = dx.abs() + dz.abs();
-                    // 顶层 (dy=+1): 只留十字 (dist <= 1).
-                    if dy == 1 && dist > 1 {
+                    if dx.abs() == rx && dz.abs() == rz {
                         continue;
                     }
-                    // 底层 (dy=-1): 只留十字 (dist <= 1), 避免地面过宽.
-                    if dy == -1 && dist > 1 {
-                        continue;
-                    }
-                    // 中心列 (dx==0 && dz==0) 已被树干占据, 跳过.
-                    if dx == 0 && dz == 0 {
+                    let edge = dx.abs() == rx || dz.abs() == rz;
+                    if edge && hash01(self.x + dx, dy + 16, self.z + dz, shape) < gaps {
                         continue;
                     }
                     out.push((self.x + dx, y, self.z + dz, Block::OakLeaves));
@@ -112,80 +111,94 @@ impl TreeDecorator {
         z0: i64,
         z1: i64,
     ) -> Vec<Tree> {
-        let w = (x1 - x0) as usize;
-        let h = (z1 - z0) as usize;
-        let mut candidates = vec![false; w * h];
-        let mut ground_y = vec![0i64; w * h];
+        debug_assert!(
+            x0 <= x1 && z0 <= z1,
+            "generate 的区域必须是半开区间 x0<=x1, z0<=z1"
+        );
+        let w = (x1 - x0).max(0) as usize;
+        let h = (z1 - z0).max(0) as usize;
+        if w == 0 || h == 0 {
+            return Vec::new();
+        }
 
-        // 第一遍: 标记候选 + 记录地面高.
-        for zi in 0..h {
-            for xi in 0..w {
-                let x = x0 + xi as i64;
-                let z = z0 + zi as i64;
+        // 保留 2 格 padding，这样每个候选的 spacing 胜负只依赖局部
+        // ±2 邻域，不依赖调用方一次查询了多大区域、也不依赖扫描顺序。
+        const PAD: i64 = 2;
+        let padded_x0 = x0 - PAD;
+        let padded_z0 = z0 - PAD;
+        let padded_w = w + (PAD * 2) as usize;
+        let padded_h = h + (PAD * 2) as usize;
+
+        let mut candidates = vec![false; padded_w * padded_h];
+        let mut priorities = vec![0u64; padded_w * padded_h];
+        let mut ground_y = vec![0i64; padded_w * padded_h];
+
+        for pzi in 0..padded_h {
+            let z = padded_z0 + pzi as i64;
+            for pxi in 0..padded_w {
+                let x = padded_x0 + pxi as i64;
                 let hi = world.height(x, z);
-                let ground = hi.floor() as i64;
-                ground_y[zi * w + xi] = ground;
+                let index = pzi * padded_w + pxi;
+                ground_y[index] = hi.floor() as i64;
                 if is_grass_surface(hi) && self.roll(x, z) {
-                    candidates[zi * w + xi] = true;
+                    candidates[index] = true;
+                    priorities[index] = self.priority(x, z);
                 }
             }
         }
 
-        // 第二遍: spacing 检查. 全方向 5×5 邻域, 若已有保留候选且距离 < 3, 则跳过.
-        let mut keep = vec![false; w * h];
+        let mut trees = Vec::new();
         for zi in 0..h {
+            let z = z0 + zi as i64;
             for xi in 0..w {
-                if !candidates[zi * w + xi] {
+                let x = x0 + xi as i64;
+                let pxi = xi + PAD as usize;
+                let pzi = zi + PAD as usize;
+                let index = pzi * padded_w + pxi;
+                if !candidates[index] {
                     continue;
                 }
-                let mut conflict = false;
-                for dzi in -3i64..=3 {
-                    for dxi in -3i64..=3 {
-                        if dxi == 0 && dzi == 0 {
+
+                let priority = priorities[index];
+                let mut winner = true;
+                for dz in -PAD..=PAD {
+                    for dx in -PAD..=PAD {
+                        if dx == 0 && dz == 0 {
                             continue;
                         }
-                        let nzi = zi as i64 + dzi;
-                        let nxi = xi as i64 + dxi;
-                        if nzi < 0 || nxi < 0 || nzi >= h as i64 || nxi >= w as i64 {
+                        if dx * dx + dz * dz >= 9 {
                             continue;
                         }
-                        if keep[nzi as usize * w + nxi as usize] {
-                            let dist2 = dxi * dxi + dzi * dzi;
-                            if dist2 < 9 {
-                                conflict = true;
-                                break;
-                            }
+                        let nxi = pxi as i64 + dx;
+                        let nzi = pzi as i64 + dz;
+                        let nindex = nzi as usize * padded_w + nxi as usize;
+                        if !candidates[nindex] {
+                            continue;
+                        }
+                        let neighbour_priority = priorities[nindex];
+                        if neighbour_priority > priority
+                            || (neighbour_priority == priority && (x + dx, z + dz) < (x, z))
+                        {
+                            winner = false;
+                            break;
                         }
                     }
-                    if conflict {
+                    if !winner {
                         break;
                     }
                 }
-                if !conflict {
-                    keep[zi * w + xi] = true;
+
+                if winner {
+                    trees.push(Tree {
+                        x,
+                        z,
+                        ground: ground_y[index],
+                        height: self.tree_height(x, z),
+                    });
                 }
             }
         }
 
-        // 第三遍: 构造 Tree.
-        let mut trees = Vec::new();
-        for zi in 0..h {
-            for xi in 0..w {
-                if !keep[zi * w + xi] {
-                    continue;
-                }
-                let x = x0 + xi as i64;
-                let z = z0 + zi as i64;
-                let ground = ground_y[zi * w + xi];
-                let height = self.tree_height(x, z);
-                trees.push(Tree {
-                    x,
-                    z,
-                    ground,
-                    height,
-                });
-            }
-        }
         trees
     }
 
@@ -194,12 +207,23 @@ impl TreeDecorator {
         hash01(x, 0, z, self.seed ^ 0x77) < self.density
     }
 
-    /// 树干高度: 4 或 5, 由位置 hash 决定.
+    /// 候选树的确定性优先级。spacing 过滤只保留局部邻域内优先级最高的候选，
+    /// 因此结果不依赖扫描顺序或查询窗口大小。
+    fn priority(&self, x: i64, z: i64) -> u64 {
+        hash64(x, 3, z, self.seed ^ 0x5A17_5A17_5A17_5A17)
+    }
+
+    /// 树干高度: 4--7 格, 高树较少, 由 seed 和位置 hash 决定.
     fn tree_height(&self, x: i64, z: i64) -> i64 {
-        if hash01(x, 1, z, self.seed ^ 0x4B) < 0.5 {
+        let roll = hash01(x, 2, z, self.seed ^ 0x4B);
+        if roll < 0.25 {
             4
-        } else {
+        } else if roll < 0.62 {
             5
+        } else if roll < 0.90 {
+            6
+        } else {
+            7
         }
     }
 }
@@ -210,12 +234,16 @@ fn is_grass_surface(h: f64) -> bool {
 }
 
 /// 复用 column.rs 同款 hash → [0, 1).
-fn hash01(x: i64, y: i64, z: i64, seed: u64) -> f64 {
+fn hash64(x: i64, y: i64, z: i64, seed: u64) -> u64 {
     let mut h = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
     h = splitmix64(h.wrapping_add(x as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9));
     h = splitmix64(h.wrapping_add(y as u64).wrapping_mul(0x94d0_49bb_1331_11eb));
     h = splitmix64(h.wrapping_add(z as u64).wrapping_mul(0xda94_9d13_b7dd_3787));
-    ((h >> 11) as f64) / ((1u64 << 53) as f64)
+    h
+}
+
+fn hash01(x: i64, y: i64, z: i64, seed: u64) -> f64 {
+    ((hash64(x, y, z, seed) >> 11) as f64) / ((1u64 << 53) as f64)
 }
 
 #[cfg(test)]
@@ -273,6 +301,39 @@ mod tests {
     }
 
     #[test]
+    fn varied_shapes_stay_inside_column_query_halo() {
+        use std::collections::HashSet;
+        let mut silhouettes = HashSet::new();
+        for x in -32..32 {
+            for height in 4..=7 {
+                let tree = Tree {
+                    x,
+                    z: -17,
+                    ground: 64,
+                    height,
+                };
+                let blocks = tree.blocks();
+                assert_eq!(blocks, tree.blocks());
+                let mut occupied = HashSet::new();
+                for &(bx, by, bz, _) in &blocks {
+                    assert!((bx - x).abs() <= 2 && (bz + 17).abs() <= 2);
+                    assert!((65..=65 + height).contains(&by));
+                    assert!(occupied.insert((bx, by, bz)), "overlapping wood/leaves");
+                }
+                silhouettes.insert(
+                    blocks
+                        .iter()
+                        .filter_map(|&(bx, by, bz, block)| {
+                            (block == Block::OakLeaves).then_some((bx - x, by - height, bz + 17))
+                        })
+                        .collect::<Vec<_>>(),
+                );
+            }
+        }
+        assert!(silhouettes.len() > 32, "canopies should visibly vary");
+    }
+
+    #[test]
     fn deterministic() {
         let world = WorldHeightmap::new(42);
         let d = TreeDecorator::new(42);
@@ -283,6 +344,44 @@ mod tests {
             assert_eq!(ta.x, tb.x);
             assert_eq!(ta.z, tb.z);
             assert_eq!(ta.height, tb.height);
+        }
+    }
+
+    #[test]
+    fn local_queries_agree_with_global_generation() {
+        let seed = 2026_0904;
+        let world = WorldHeightmap::new(seed);
+        let d = TreeDecorator::new(seed);
+        let global = d.generate(&world, 400, 500, 900, 1000);
+        assert!(!global.is_empty(), "测试区域应至少有一棵树");
+
+        for tree in global {
+            // decorate_column 每列只查周围 2 格，因此用同样的局部窗口
+            // 重新生成时，全局被保留的树也必须再次出现。
+            let local = d.generate(&world, tree.x - 2, tree.x + 3, tree.z - 2, tree.z + 3);
+            assert!(
+                local.iter().any(|candidate| candidate.x == tree.x
+                    && candidate.z == tree.z
+                    && candidate.height == tree.height),
+                "树 ({}, {}) 在大范围生成中存在，但在局部 5x5 查询中丢失",
+                tree.x,
+                tree.z
+            );
+        }
+    }
+
+    #[test]
+    fn tree_heights_cover_varied_range() {
+        let world = WorldHeightmap::new(2026_0904);
+        let d = TreeDecorator::with_density(2026_0904, 0.15);
+        let trees = d.generate(&world, 0, 1200, 0, 1200);
+        assert!(!trees.is_empty());
+
+        for expected in [4, 5, 6, 7] {
+            assert!(
+                trees.iter().any(|tree| tree.height == expected),
+                "没有生成高度为 {expected} 的树"
+            );
         }
     }
 

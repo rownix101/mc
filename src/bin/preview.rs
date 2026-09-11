@@ -1,10 +1,10 @@
-//! 平原高度场预览: 生成灰度高度图 + 统计.
+//! Epic Terrain 风格宏观预览: 生成海陆/山脉/河流图 + 统计.
 //! 用法: `cargo run -r --bin preview -- [seed] [size_px] [step] [out]`
-//! 默认: seed=20260904 size=1024 step=4 out=target/plains.png (覆盖 4096x4096 格).
+//! 默认: seed=20260904 size=1024 step=8 out=target/terrain.png.
 
 use std::time::Instant;
 
-use mc::world::plains::PlainsHeightmap;
+use mc::world::continent::{SEA_LEVEL, WorldHeightmap};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -17,18 +17,29 @@ fn main() {
     let out = args
         .get(4)
         .cloned()
-        .unwrap_or_else(|| "target/plains.png".to_string());
+        .unwrap_or_else(|| "target/terrain.png".to_string());
 
-    let gen_map = PlainsHeightmap::new(seed);
+    let gen_map = WorldHeightmap::new(seed);
     let t0 = Instant::now();
     let n = size as usize;
     let mut h = vec![0f64; n * n];
+    let mut kind = vec![0u8; n * n]; // 0=海, 1=陆地, 2=山脉, 3=河流
     let half = size as i64 * step / 2;
     for py in 0..size {
         for px in 0..size {
             let x = px as i64 * step - half;
             let z = py as i64 * step - half;
-            h[py as usize * n + px as usize] = gen_map.height(x, z);
+            let sample = gen_map.sample(x, z);
+            h[py as usize * n + px as usize] = sample.height;
+            kind[py as usize * n + px as usize] = if sample.height <= SEA_LEVEL {
+                0
+            } else if sample.river_factor > 0.55 {
+                3
+            } else if sample.mountain_factor > 0.52 {
+                2
+            } else {
+                1
+            };
         }
     }
     let sample_ms = t0.elapsed().as_millis();
@@ -46,10 +57,14 @@ fn main() {
     let var = h.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / h.len() as f64;
     let std = var.sqrt();
 
+    let land = kind.iter().filter(|&&kind| kind != 0).count();
+    let mountains = kind.iter().filter(|&&kind| kind == 2).count();
+    let rivers = kind.iter().filter(|&&kind| kind == 3).count();
+
     // 坡度: 中心差分 (格/格).
     let at = |x: usize, y: usize| h[y * n + x];
     let mut slope_sum = 0.0;
-    let mut steep = 0u64; // 坡度 > 0.35 (~19°) 的像素数: 平原不应多.
+    let mut steep = 0u64; // 坡度 > 0.35 (~19°) 的像素数.
     let mut cnt = 0u64;
     for y in 1..n - 1 {
         for x in 1..n - 1 {
@@ -65,11 +80,33 @@ fn main() {
     }
     let mean_slope = slope_sum / cnt as f64;
 
-    // 灰度图: min->黑, max->白.
+    // 伪彩色图：深蓝海洋、绿色平原、赭白山脉、青色河流。
     let span = (max - min).max(1e-9);
-    let img = image::GrayImage::from_fn(size, size, |x, y| {
+    let img = image::RgbImage::from_fn(size, size, |x, y| {
+        let index = y as usize * n + x as usize;
         let v = h[y as usize * n + x as usize];
-        image::Luma([((v - min) / span * 255.0) as u8])
+        let elevation = ((v - min) / span).clamp(0.0, 1.0);
+        match kind[index] {
+            0 => {
+                let depth = ((SEA_LEVEL - v) / 20.0).clamp(0.0, 1.0);
+                image::Rgb([
+                    (28.0 - 16.0 * depth) as u8,
+                    (112.0 - 76.0 * depth) as u8,
+                    190,
+                ])
+            }
+            2 => image::Rgb([
+                (105.0 + 125.0 * elevation) as u8,
+                (92.0 + 125.0 * elevation) as u8,
+                (68.0 + 128.0 * elevation) as u8,
+            ]),
+            3 => image::Rgb([35, 155, 175]),
+            _ => image::Rgb([
+                (48.0 + 48.0 * elevation) as u8,
+                (125.0 + 42.0 * elevation) as u8,
+                (54.0 + 22.0 * elevation) as u8,
+            ]),
+        }
     });
     img.save(&out).expect("保存 PNG 失败");
 
@@ -90,11 +127,10 @@ fn main() {
         "平均坡度={mean_slope:.3}格/格 陡坡(>0.35)占比={steep_pct:.2}%",
         steep_pct = steep as f64 * 100.0 / cnt as f64
     );
-    let steep_frac = steep as f64 * 100.0 / cnt as f64;
     println!(
-        "验收: 极差<8? {}  std<2? {}  陡坡<2%? {}",
-        max - min < 8.0,
-        std < 2.0,
-        steep_frac < 2.0
+        "地貌: 陆地={:.1}% 山脉={:.1}% 河流={:.1}%",
+        land as f64 * 100.0 / h.len() as f64,
+        mountains as f64 * 100.0 / h.len() as f64,
+        rivers as f64 * 100.0 / h.len() as f64
     );
 }

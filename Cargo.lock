@@ -1504,6 +1504,7 @@ dependencies = [
  "egui-winit",
  "fastnoise-lite",
  "glam",
+ "half",
  "image",
  "pollster",
  "rayon",

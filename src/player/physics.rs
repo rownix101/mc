@@ -23,6 +23,8 @@ pub struct PlayerInput {
     pub swim_up: bool,
     /// 在流体中向下游泳。通常由持续按住 Shift 产生。
     pub swim_down: bool,
+    /// 创造模式飞行。此时空格和 Shift 分别控制上升和下降，并禁用重力。
+    pub creative: bool,
 }
 
 /// 体素玩家的 AABB。
@@ -80,6 +82,7 @@ pub struct PhysicsConfig {
     pub swim_vertical_friction: f64,
     pub water_gravity: f64,
     pub water_terminal_velocity: f64,
+    pub creative_speed: f64,
 }
 
 impl Default for PhysicsConfig {
@@ -103,6 +106,7 @@ impl Default for PhysicsConfig {
             swim_vertical_friction: 8.0,
             water_gravity: -8.0,
             water_terminal_velocity: -4.0,
+            creative_speed: 8.0,
         }
     }
 }
@@ -168,7 +172,13 @@ impl Player {
         if direction.length_squared() > 1.0 {
             direction = direction.normalize();
         }
-        let (speed, acceleration, friction) = if in_fluid {
+        let (speed, acceleration, friction) = if input.creative {
+            (
+                self.config.creative_speed,
+                self.config.air_acceleration,
+                self.config.air_friction,
+            )
+        } else if in_fluid {
             (
                 self.config.swim_speed,
                 self.config.swim_acceleration,
@@ -197,7 +207,21 @@ impl Player {
             self.velocity.z = approach(self.velocity.z, 0.0, friction * dt);
         }
 
-        if submerged {
+        if input.creative {
+            let vertical_input = input.swim_up as i8 - input.swim_down as i8;
+            let target_vertical_velocity = vertical_input as f64 * self.config.creative_speed;
+            let vertical_change = if vertical_input == 0 {
+                self.config.air_friction
+            } else {
+                self.config.air_acceleration
+            };
+            self.velocity.y = approach(
+                self.velocity.y,
+                target_vertical_velocity,
+                vertical_change * dt,
+            );
+            self.on_ground = false;
+        } else if submerged {
             // `jump` is also accepted as a one-step upward impulse for callers
             // that do not track held-key state separately.
             let swim_vertical_input = (input.swim_up || input.jump) as i8 - input.swim_down as i8;
@@ -519,6 +543,40 @@ mod tests {
             },
         );
         assert!(player.velocity.length() <= player.config.walk_speed + 1.0e-9);
+    }
+
+    #[test]
+    fn creative_flight_ignores_gravity_and_uses_vertical_input() {
+        let mut world = TestWorld::floor();
+        let mut player = Player::new(DVec3::new(0.5, 4.0, 0.5));
+        let start_y = player.position.y;
+
+        for _ in 0..60 {
+            player.step(
+                &mut world,
+                PlayerInput {
+                    creative: true,
+                    swim_up: true,
+                    ..PlayerInput::default()
+                },
+                1.0 / 60.0,
+            );
+        }
+        assert!(player.position.y > start_y);
+
+        let mut hovering = Player::new(DVec3::new(0.5, 4.0, 0.5));
+        for _ in 0..60 {
+            hovering.step(
+                &mut world,
+                PlayerInput {
+                    creative: true,
+                    ..PlayerInput::default()
+                },
+                1.0 / 60.0,
+            );
+        }
+        assert!((hovering.position.y - start_y).abs() < 1.0e-9);
+        assert_eq!(hovering.velocity.y, 0.0);
     }
 
     #[test]

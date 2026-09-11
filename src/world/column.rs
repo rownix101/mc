@@ -5,19 +5,20 @@
 //!
 //! ```text
 //! y=0            基岩
-//! y=1..=top-4    石头 (按深度掺煤矿/铁/金/钻石, 见 ORE 表)
-//! y=top-3..=top-1 垫层: 陆地=泥土, 沙滩/浅海=沙子, 深海=沙砾
-//! y=top          表面: 陆地=草方块, 沙滩/浅海=沙子, 深海=沙砾 (小概率黏土透镜)
-//! y=top+1..=60   水 (仅 h <= SEA_LEVEL 时)
+//! y=1..=top-4    石头 (按深度掺煤矿/铁/金/钻石/红石, 见 ORE 表)
+//! y=top-3..=top-1 垫层: 陆地=泥土, 河床/沙滩/浅海=沙子或沙砾, 深海=沙砾
+//! y=top          表面: 陆地=草方块, 河床/沙滩/浅海=沙子或沙砾
+//! y=top+1..=water_top   水 (海洋或河流)
 //! ```
 //!
 //! - `SEA_Y = 60` = `floor(SEA_LEVEL=60.5)`. 水面占到 y=60.
 //! - 沙滩: `SEA < h <= SEA+2` (top 为 61/62). 浅海: `SEA-4 <= h <= SEA`.
+//! - 河流使用未切割河岸高度作为水面，避免河槽只被切开而没有水。
 //! - 沙滩/浅海垫层下另有 2 格砂岩 (`top-5..=top-4` 为沙子区时).
 //! - 矿石只替换石头区, 按一次 hash 互斥 roll (钻石>金>铁>煤).
 
 use super::block::Block;
-use super::continent::SEA_LEVEL;
+use super::continent::{SEA_LEVEL, TerrainSample};
 use super::plains::splitmix64;
 
 /// 最低/最高 y. `Y_MAX` 留出树/建筑空间, 柱只存到 `max(top, SEA_Y)`.
@@ -45,19 +46,53 @@ impl ColumnGen {
 
     /// 纯函数: 同一 `(x, z, h)` 必得同一柱.
     pub fn generate(&self, x: i64, z: i64, h: f64) -> Column {
-        let top = (h.floor() as i64).clamp(Y_MIN, Y_MAX);
-        let stored_top = top.max(SEA_Y);
+        self.generate_with_terrain(
+            x,
+            z,
+            TerrainSample {
+                height: h,
+                base_height: h,
+                land_factor: if h > SEA_LEVEL { 1.0 } else { 0.0 },
+                mountain_factor: 0.0,
+                ridge_factor: 0.0,
+                erosion: 1.0,
+                river_factor: 0.0,
+            },
+        )
+    }
+
+    /// 用高度图的完整采样生成柱。河流水面需要 `base_height`，所以不能
+    /// 只传最终地表高度，否则切开的河槽会变成干沟。
+    pub fn generate_with_terrain(&self, x: i64, z: i64, terrain: TerrainSample) -> Column {
+        let top = (terrain.height.floor() as i64).clamp(Y_MIN, Y_MAX);
+        let is_river = terrain.river_factor > 0.42
+            && terrain.land_factor > 0.58
+            && terrain.height > SEA_LEVEL - 2.0;
+        let river_water_top = if is_river {
+            (terrain.base_height - 0.35).floor() as i64
+        } else {
+            SEA_Y
+        };
+        let water_top = if terrain.height <= SEA_LEVEL || is_river {
+            river_water_top.max(SEA_Y)
+        } else {
+            Y_MIN
+        };
+        let stored_top = top.max(water_top).clamp(Y_MIN, Y_MAX);
         let mut blocks = vec![Block::Air; (stored_top - Y_MIN + 1) as usize];
         let set = |blocks: &mut Vec<Block>, y: i64, b: Block| {
             blocks[(y - Y_MIN) as usize] = b;
         };
 
-        let is_land = h > SEA_LEVEL;
-        let is_beach = is_land && h <= SEA_LEVEL + 2.0;
-        let is_shallow = !is_land && h >= SEA_LEVEL - 4.0;
+        let is_land = terrain.height > SEA_LEVEL;
+        let is_beach = is_land && terrain.height <= SEA_LEVEL + 2.0;
+        let is_shallow = !is_land && terrain.height >= SEA_LEVEL - 4.0;
+        let river_bed = is_river && terrain.height <= terrain.base_height - 0.7;
 
         // 表面块.
-        let surface = if is_land && !is_beach {
+        let surface = if river_bed {
+            Block::Gravel
+        } else if is_land && !is_beach {
             Block::GrassBlock
         } else if is_beach || is_shallow {
             Block::Sand
@@ -71,7 +106,7 @@ impl ColumnGen {
         for y in Y_MIN..=stored_top {
             let b = if y == Y_MIN {
                 Block::Bedrock
-            } else if y > top {
+            } else if y > top && y <= water_top {
                 Block::Water
             } else if y == top {
                 surface
@@ -94,29 +129,37 @@ impl ColumnGen {
     fn stone_or_ore(&self, x: i64, y: i64, z: i64) -> Block {
         let r = hash01(x, y, z, self.seed);
         if y <= 16 {
-            if r < 0.008 {
+            if r < 0.004 {
+                Block::DeepslateRedstoneOre
+            } else if r < 0.009 {
+                Block::RedstoneOre
+            } else if r < 0.017 {
                 Block::DiamondOre
-            } else if r < 0.013 {
+            } else if r < 0.022 {
                 Block::GoldOre
-            } else if r < 0.028 {
+            } else if r < 0.037 {
                 Block::IronOre
-            } else if r < 0.050 {
+            } else if r < 0.059 {
                 Block::CoalOre
             } else {
                 Block::Stone
             }
         } else if y <= 32 {
-            if r < 0.006 {
+            if r < 0.004 {
+                Block::RedstoneOre
+            } else if r < 0.010 {
                 Block::GoldOre
-            } else if r < 0.020 {
+            } else if r < 0.024 {
                 Block::IronOre
-            } else if r < 0.045 {
+            } else if r < 0.049 {
                 Block::CoalOre
             } else {
                 Block::Stone
             }
         } else if y <= 64 {
-            if r < 0.012 {
+            if r < 0.004 {
+                Block::RedstoneOre
+            } else if r < 0.012 {
                 Block::IronOre
             } else if r < 0.035 {
                 Block::CoalOre
@@ -232,7 +275,12 @@ mod tests {
             let b = c.get(y);
             let is_ore = matches!(
                 b,
-                Block::CoalOre | Block::IronOre | Block::GoldOre | Block::DiamondOre
+                Block::CoalOre
+                    | Block::IronOre
+                    | Block::GoldOre
+                    | Block::DiamondOre
+                    | Block::RedstoneOre
+                    | Block::DeepslateRedstoneOre
             );
             if is_ore {
                 assert!(y <= 90 - 6, "矿石只能在石头区: y={y}");

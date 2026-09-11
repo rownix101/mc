@@ -2,7 +2,8 @@
 //!
 //! - id 稳定 (`#[repr(u16)]` 显式判别值). 存档/网络直接存 `u16`, 已分配 id 永不复用.
 //! - `Air = 0` 保留为空气.
-//! - 贴图全部 16x16, 来自 REFI (CC BY-SA 4.0, 见 `assets/textures/ATTRIBUTION.md`).
+//! - 基础贴图全部 16x16，由 Poly Haven CC0 材质派生（来源和处理方式见
+//!   `assets/textures/ATTRIBUTION.md`).
 //! - 面模型: `Top / Bottom / Side` (四侧共用). 只有原木类 Top 与 Side 不同.
 //! - JSON 数据驱动是 M8 的事 (见 TECH_ROADMAP 3.9); 注册表 API 已按"代码只认 id"设计,
 //!   到时把 `REGISTRY` 换成 JSON 加载即可, 调用方不用改.
@@ -33,10 +34,21 @@ pub enum Block {
     GoldOre = 17,
     DiamondOre = 18,
     Water = 19,
+    Bookshelf = 20,
+    Beehive = 21,
+    Furnace = 22,
+    Piston = 23,
+    RedstoneOre = 24,
+    DeepslateRedstoneOre = 25,
 }
 
 /// 方块总数 (含空气).
-pub const COUNT: usize = 20;
+pub const COUNT: usize = 26;
+
+/// 光照强度上限 (与 Minecraft 一致: 0..=15).
+pub const LIGHT_MAX: u8 = 15;
+/// 不透明方块的光照衰减, 大于 [`LIGHT_MAX`] 即表示完全不透光.
+pub const LIGHT_OPAQUE: u8 = LIGHT_MAX + 1;
 
 /// 按 id 升序的全部方块. id 即数组下标, 改表时必须同步.
 pub const ALL: [Block; COUNT] = [
@@ -60,6 +72,12 @@ pub const ALL: [Block; COUNT] = [
     Block::GoldOre,
     Block::DiamondOre,
     Block::Water,
+    Block::Bookshelf,
+    Block::Beehive,
+    Block::Furnace,
+    Block::Piston,
+    Block::RedstoneOre,
+    Block::DeepslateRedstoneOre,
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -123,9 +141,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 1,
         name: "mc:grass_block",
         display: "草方块",
-        top: "default_grass.png",
-        side: "default_grass_side.png",
-        bottom: "default_dirt.png",
+        top: "grass_block_top.png",
+        side: "grass_block_side_overlay.png",
+        bottom: "dirt.png",
         render: RenderClass::Opaque,
         solid: true,
         fluid: false,
@@ -137,9 +155,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 2,
         name: "mc:dirt",
         display: "泥土",
-        top: "default_dirt.png",
-        side: "default_dirt.png",
-        bottom: "default_dirt.png",
+        top: "dirt.png",
+        side: "dirt.png",
+        bottom: "dirt.png",
         render: RenderClass::Opaque,
         solid: true,
         fluid: false,
@@ -151,9 +169,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 3,
         name: "mc:stone",
         display: "石头",
-        top: "default_stone.png",
-        side: "default_stone.png",
-        bottom: "default_stone.png",
+        top: "stone.png",
+        side: "stone.png",
+        bottom: "stone.png",
         render: RenderClass::Opaque,
         solid: true,
         fluid: false,
@@ -165,9 +183,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 4,
         name: "mc:cobblestone",
         display: "圆石",
-        top: "default_cobble.png",
-        side: "default_cobble.png",
-        bottom: "default_cobble.png",
+        top: "cobblestone.png",
+        side: "cobblestone.png",
+        bottom: "cobblestone.png",
         render: RenderClass::Opaque,
         solid: true,
         fluid: false,
@@ -179,9 +197,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 5,
         name: "mc:sand",
         display: "沙子",
-        top: "default_sand.png",
-        side: "default_sand.png",
-        bottom: "default_sand.png",
+        top: "sand.png",
+        side: "sand.png",
+        bottom: "sand.png",
         render: RenderClass::Opaque,
         solid: true,
         fluid: false,
@@ -193,9 +211,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 6,
         name: "mc:sandstone",
         display: "砂岩",
-        top: "mcl_core_sandstone_normal.png",
-        side: "mcl_core_sandstone_normal.png",
-        bottom: "mcl_core_sandstone_normal.png",
+        top: "sandstone_top.png",
+        side: "sandstone.png",
+        bottom: "sandstone_bottom.png",
         render: RenderClass::Opaque,
         solid: true,
         fluid: false,
@@ -207,9 +225,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 7,
         name: "mc:gravel",
         display: "沙砾",
-        top: "default_gravel.png",
-        side: "default_gravel.png",
-        bottom: "default_gravel.png",
+        top: "gravel.png",
+        side: "gravel.png",
+        bottom: "gravel.png",
         render: RenderClass::Opaque,
         solid: true,
         fluid: false,
@@ -221,9 +239,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 8,
         name: "mc:clay",
         display: "黏土块",
-        top: "default_clay.png",
-        side: "default_clay.png",
-        bottom: "default_clay.png",
+        top: "clay.png",
+        side: "clay.png",
+        bottom: "clay.png",
         render: RenderClass::Opaque,
         solid: true,
         fluid: false,
@@ -235,9 +253,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 9,
         name: "mc:oak_log",
         display: "橡木原木",
-        top: "default_tree_top.png",
-        side: "default_tree.png",
-        bottom: "default_tree_top.png",
+        top: "oak_log_top.png",
+        side: "oak_log.png",
+        bottom: "oak_log_top.png",
         render: RenderClass::Opaque,
         solid: true,
         fluid: false,
@@ -249,9 +267,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 10,
         name: "mc:oak_planks",
         display: "橡木板",
-        top: "default_wood.png",
-        side: "default_wood.png",
-        bottom: "default_wood.png",
+        top: "oak_planks.png",
+        side: "oak_planks.png",
+        bottom: "oak_planks.png",
         render: RenderClass::Opaque,
         solid: true,
         fluid: false,
@@ -263,9 +281,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 11,
         name: "mc:oak_leaves",
         display: "橡树叶",
-        top: "default_leaves.png",
-        side: "default_leaves.png",
-        bottom: "default_leaves.png",
+        top: "oak_leaves.png",
+        side: "oak_leaves.png",
+        bottom: "oak_leaves.png",
         render: RenderClass::Cutout,
         solid: true,
         fluid: false,
@@ -277,9 +295,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 12,
         name: "mc:glass",
         display: "玻璃",
-        top: "default_glass_detail.png",
-        side: "default_glass_detail.png",
-        bottom: "default_glass_detail.png",
+        top: "glass.png",
+        side: "glass.png",
+        bottom: "glass.png",
         render: RenderClass::Transparent,
         solid: true,
         fluid: false,
@@ -291,9 +309,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 13,
         name: "mc:bedrock",
         display: "基岩",
-        top: "mcl_core_bedrock.png",
-        side: "mcl_core_bedrock.png",
-        bottom: "mcl_core_bedrock.png",
+        top: "bedrock.png",
+        side: "bedrock.png",
+        bottom: "bedrock.png",
         render: RenderClass::Opaque,
         solid: true,
         fluid: false,
@@ -305,9 +323,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 14,
         name: "mc:obsidian",
         display: "黑曜石",
-        top: "default_obsidian.png",
-        side: "default_obsidian.png",
-        bottom: "default_obsidian.png",
+        top: "obsidian.png",
+        side: "obsidian.png",
+        bottom: "obsidian.png",
         render: RenderClass::Opaque,
         solid: true,
         fluid: false,
@@ -319,9 +337,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 15,
         name: "mc:coal_ore",
         display: "煤矿",
-        top: "mcl_core_coal_ore.png",
-        side: "mcl_core_coal_ore.png",
-        bottom: "mcl_core_coal_ore.png",
+        top: "coal_ore.png",
+        side: "coal_ore.png",
+        bottom: "coal_ore.png",
         render: RenderClass::Opaque,
         solid: true,
         fluid: false,
@@ -333,9 +351,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 16,
         name: "mc:iron_ore",
         display: "铁矿",
-        top: "mcl_core_iron_ore.png",
-        side: "mcl_core_iron_ore.png",
-        bottom: "mcl_core_iron_ore.png",
+        top: "iron_ore.png",
+        side: "iron_ore.png",
+        bottom: "iron_ore.png",
         render: RenderClass::Opaque,
         solid: true,
         fluid: false,
@@ -347,9 +365,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 17,
         name: "mc:gold_ore",
         display: "金矿",
-        top: "mcl_core_gold_ore.png",
-        side: "mcl_core_gold_ore.png",
-        bottom: "mcl_core_gold_ore.png",
+        top: "gold_ore.png",
+        side: "gold_ore.png",
+        bottom: "gold_ore.png",
         render: RenderClass::Opaque,
         solid: true,
         fluid: false,
@@ -361,9 +379,9 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 18,
         name: "mc:diamond_ore",
         display: "钻石矿",
-        top: "mcl_core_diamond_ore.png",
-        side: "mcl_core_diamond_ore.png",
-        bottom: "mcl_core_diamond_ore.png",
+        top: "diamond_ore.png",
+        side: "diamond_ore.png",
+        bottom: "diamond_ore.png",
         render: RenderClass::Opaque,
         solid: true,
         fluid: false,
@@ -375,15 +393,100 @@ const REGISTRY: [BlockDef; COUNT] = [
         id: 19,
         name: "mc:water",
         display: "水",
-        top: "default_water.png",
-        side: "default_water.png",
-        bottom: "default_water.png",
+        top: "water_overlay.png",
+        side: "water_overlay.png",
+        bottom: "water_overlay.png",
         render: RenderClass::Fluid,
         solid: false,
         fluid: true,
         gravity: false,
         hardness: None,
         blast: 100.0,
+    },
+    BlockDef {
+        id: 20,
+        name: "mc:bookshelf",
+        display: "书架",
+        top: "bookshelf_top.png",
+        side: "bookshelf.png",
+        bottom: "bookshelf_top.png",
+        render: RenderClass::Opaque,
+        solid: true,
+        fluid: false,
+        gravity: false,
+        hardness: Some(1.5),
+        blast: 1.5,
+    },
+    BlockDef {
+        id: 21,
+        name: "mc:beehive",
+        display: "蜂箱",
+        top: "beehive_end.png",
+        side: "beehive_side.png",
+        bottom: "beehive_end.png",
+        render: RenderClass::Opaque,
+        solid: true,
+        fluid: false,
+        gravity: false,
+        hardness: Some(0.6),
+        blast: 0.6,
+    },
+    BlockDef {
+        id: 22,
+        name: "mc:furnace",
+        display: "熔炉",
+        top: "furnace_top.png",
+        side: "furnace_side.png",
+        bottom: "furnace_top.png",
+        render: RenderClass::Opaque,
+        solid: true,
+        fluid: false,
+        gravity: false,
+        hardness: Some(3.5),
+        blast: 3.5,
+    },
+    BlockDef {
+        id: 23,
+        name: "mc:piston",
+        display: "活塞",
+        top: "piston_top.png",
+        side: "piston_side.png",
+        bottom: "piston_inner.png",
+        render: RenderClass::Opaque,
+        solid: true,
+        fluid: false,
+        gravity: false,
+        hardness: Some(1.5),
+        blast: 1.5,
+    },
+    BlockDef {
+        id: 24,
+        name: "mc:redstone_ore",
+        display: "红石矿",
+        top: "redstone_ore.png",
+        side: "redstone_ore.png",
+        bottom: "redstone_ore.png",
+        render: RenderClass::Opaque,
+        solid: true,
+        fluid: false,
+        gravity: false,
+        hardness: Some(3.0),
+        blast: 3.0,
+    },
+    BlockDef {
+        id: 25,
+        name: "mc:deepslate_redstone_ore",
+        display: "深层红石矿",
+        // Pixel Perfection CE targets Minecraft 1.16, before deepslate existed.
+        top: "redstone_ore.png",
+        side: "redstone_ore.png",
+        bottom: "redstone_ore.png",
+        render: RenderClass::Opaque,
+        solid: true,
+        fluid: false,
+        gravity: false,
+        hardness: Some(4.5),
+        blast: 3.0,
     },
 ];
 
@@ -432,6 +535,49 @@ impl Block {
         )
     }
 
+    /// 供体素着色器区分的渲染材质编码:
+    /// `0` = 普通不透明/alpha-test, `1` = 流体, `2` = 树叶 cutout, `3` = 草方块, `4` = 连续混合沙地.
+    ///
+    /// 树叶单独编码后可以在片元着色器里做背面透光和参与柔和的丁达尔
+    /// 屏幕空间散射; 它仍然写不透明深度、通过 atlas alpha 做镂空。
+    pub fn render_material(self) -> f32 {
+        if self == Self::Sand {
+            return 4.0;
+        }
+        if self == Self::GrassBlock {
+            return 3.0;
+        }
+        match self.def().render {
+            RenderClass::Fluid => 1.0,
+            RenderClass::Cutout => 2.0,
+            _ => 0.0,
+        }
+    }
+
+    /// 生成树木使用的方块（原木/树叶）。LOD 需要把它们和地形表面分开处理。
+    pub fn is_tree(self) -> bool {
+        matches!(self, Block::OakLog | Block::OakLeaves)
+    }
+
+    /// 光穿过一格该方块后的衰减. 不透明方块返回 [`LIGHT_OPAQUE`], 表示完全
+    /// 不透光; 其它方块至少衰减 1, 水和树叶更多, 用来表现海深和树荫.
+    pub fn light_attenuation(self) -> u8 {
+        if self.is_opaque() {
+            return LIGHT_OPAQUE;
+        }
+        match self {
+            Block::Water => 2,
+            Block::OakLeaves => 2,
+            _ => 1,
+        }
+    }
+
+    /// 方块自发光强度 (`0..=LIGHT_MAX`). 目前注册表里还没有发光方块; 接入
+    /// 火把 / 萤石后在这里返回非零即可, [`crate::world::light`] 会自动拾取.
+    pub fn light_emission(self) -> u8 {
+        0
+    }
+
     /// 去重后的全部贴图文件名, 顺序 = 按 id 遍历、每块按 Top/Side/Bottom 首次出现顺序.
     /// 该顺序即 atlas 的 TileId 分配顺序, 稳定不变.
     pub fn unique_textures() -> Vec<&'static str> {
@@ -478,6 +624,8 @@ mod tests {
         assert_eq!(Block::Air.id(), 0);
         assert_eq!(Block::GrassBlock.id(), 1);
         assert_eq!(Block::Water.id(), 19);
+        assert_eq!(Block::Bookshelf.id(), 20);
+        assert_eq!(Block::DeepslateRedstoneOre.id(), 25);
         for (i, b) in ALL.iter().enumerate() {
             assert_eq!(*b as usize, i, "ALL 顺序必须与判别值一致");
             assert_eq!(b.def().id as usize, i);
@@ -491,15 +639,16 @@ mod tests {
     #[test]
     fn textures_complete() {
         let tex = Block::unique_textures();
-        assert_eq!(tex.len(), 21, "去重贴图数: {tex:?}");
-        assert_eq!(tex[0], "default_grass.png");
-        assert_eq!(tex[1], "default_grass_side.png");
-        assert_eq!(tex[2], "default_dirt.png");
-        assert_eq!(*tex.last().unwrap(), "default_water.png");
+        assert_eq!(tex.len(), 33, "去重贴图数: {tex:?}");
+        assert_eq!(tex[0], "grass_block_top.png");
+        assert_eq!(tex[1], "grass_block_side_overlay.png");
+        assert_eq!(tex[2], "dirt.png");
+        assert_eq!(tex[22], "water_overlay.png");
+        assert_eq!(tex[31], "piston_inner.png");
         // 原木顶底与侧面不同, 草方块三面模型正确.
-        assert_eq!(Block::OakLog.tile(Face::Top), "default_tree_top.png");
-        assert_eq!(Block::OakLog.tile(Face::Side), "default_tree.png");
-        assert_eq!(Block::GrassBlock.tile(Face::Bottom), "default_dirt.png");
+        assert_eq!(Block::OakLog.tile(Face::Top), "oak_log_top.png");
+        assert_eq!(Block::OakLog.tile(Face::Side), "oak_log.png");
+        assert_eq!(Block::GrassBlock.tile(Face::Bottom), "dirt.png");
     }
 
     #[test]
@@ -510,6 +659,11 @@ mod tests {
         assert!(Block::Water.is_fluid() && !Block::Water.is_solid());
         assert!(Block::Water.is_transparent() && Block::Glass.is_transparent());
         assert!(!Block::OakLeaves.is_transparent() && !Block::Stone.is_transparent());
+        // Shader material codes: ordinary = 0, water = 1, cutout leaves = 2, grass = 3.
+        assert_eq!(Block::Stone.render_material(), 0.0);
+        assert_eq!(Block::GrassBlock.render_material(), 3.0);
+        assert_eq!(Block::Water.render_material(), 1.0);
+        assert_eq!(Block::OakLeaves.render_material(), 2.0);
         assert!(Block::Sand.def().gravity && Block::Gravel.def().gravity);
         assert!(!Block::Stone.def().gravity);
         assert_eq!(Block::Bedrock.def().hardness, None);

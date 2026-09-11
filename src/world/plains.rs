@@ -56,6 +56,8 @@ impl Default for PlainsConfig {
 
 pub struct PlainsHeightmap {
     config: PlainsConfig,
+    sample_offset_x: f64,
+    sample_offset_z: f64,
     broad: FastNoiseLite,
     micro: FastNoiseLite,
     valley: FastNoiseLite,
@@ -73,6 +75,8 @@ impl PlainsHeightmap {
     }
 
     pub fn with_config(config: PlainsConfig) -> Self {
+        let sample_offset_x = seeded_coordinate_offset(config.seed, 0x50_4c_41_49_4e_53_01);
+        let sample_offset_z = seeded_coordinate_offset(config.seed, 0x50_4c_41_49_4e_53_02);
         let mut s = splitmix64(config.seed);
         let mut next_seed = || {
             s = splitmix64(s);
@@ -128,6 +132,8 @@ impl PlainsHeightmap {
         );
         Self {
             config,
+            sample_offset_x,
+            sample_offset_z,
             broad,
             micro,
             valley,
@@ -152,12 +158,16 @@ impl PlainsHeightmap {
 
     fn height_f64(&self, x: f64, z: f64) -> f64 {
         let c = &self.config;
+        // 梯度噪声在几何原点通常是固定值；按种子平移采样坐标，
+        // 避免每个世界的 (0, 0) 都落在同一种特殊地形上。
+        let sx = x + self.sample_offset_x;
+        let sz = z + self.sample_offset_z;
         // 1. warp 谷线 (手动偏移, ±warp_amp 格, 量级可控).
-        let wx = x + c.warp_amp * self.warp_x.get_noise_2d(x, z) as f64;
-        let wz = z + c.warp_amp * self.warp_z.get_noise_2d(x, z) as f64;
+        let wx = sx + c.warp_amp * self.warp_x.get_noise_2d(sx, sz) as f64;
+        let wz = sz + c.warp_amp * self.warp_z.get_noise_2d(sx, sz) as f64;
         // 2. 基底起伏.
-        let b = self.broad.get_noise_2d(x, z) as f64;
-        let m = self.micro.get_noise_2d(x, z) as f64;
+        let b = self.broad.get_noise_2d(sx, sz) as f64;
+        let m = self.micro.get_noise_2d(sx, sz) as f64;
         // 3. 谷线: |fbm| 在 0 处为谷心线 (树枝状零等值线).
         //    FBm 输出已归一化到 [-1, 1]; 波长 950m, 零线附近梯度量级 ~1/950,
         //    谷半宽 hw 格 → 噪声域阈值 hw/950.
@@ -168,7 +178,7 @@ impl PlainsHeightmap {
         let profile = t * t * (3.0 - 2.0 * t);
         // 4. mask: 只有部分区域有谷. mask 场 [-1,1] → 覆盖率映射.
         //    coverage=0.4 → 门限≈0.2: mask 高的 40% 区域 carve.
-        let mk = self.mask.get_noise_2d(x, z) as f64;
+        let mk = self.mask.get_noise_2d(sx, sz) as f64;
         let threshold = 1.0 - 2.0 * c.valley_coverage;
         let mt = ((mk - threshold) / 0.35).clamp(0.0, 1.0);
         let mask_s = mt * mt * (3.0 - 2.0 * mt);
@@ -208,6 +218,15 @@ pub fn splitmix64(mut x: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     z ^ (z >> 31)
+}
+
+pub(crate) fn seeded_coordinate_offset(seed: u64, salt: u64) -> f64 {
+    // 以项目的标准诊断种子为坐标原点，保持它已有的预览与测试地形；
+    // 其他种子则得到约 ±180 万格范围的确定性平移。
+    const REFERENCE_SEED: u64 = 2026_0904;
+    let value = (splitmix64(seed ^ salt) % 1_800_001) as i64;
+    let reference = (splitmix64(REFERENCE_SEED ^ salt) % 1_800_001) as i64;
+    (value - reference) as f64
 }
 
 #[cfg(test)]

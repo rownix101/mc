@@ -55,7 +55,9 @@ impl Camera {
         let target = (eye + self.forward()).as_vec3();
         let aspect = width.max(1) as f32 / height.max(1) as f32;
         let view = Mat4::look_at_rh(eye.as_vec3(), target, Vec3::Y);
-        let projection = Mat4::perspective_rh_gl(75.0_f32.to_radians(), aspect, 0.05, 256.0);
+        // 远裁剪面要覆盖 192 格视距加上方形网格的对角线与重建滞后；
+        // 调大 `MESH_RADIUS` / `MESH_REBUILD_DISTANCE` 时需要同步检查。
+        let projection = Mat4::perspective_rh_gl(75.0_f32.to_radians(), aspect, 0.05, 384.0);
         projection * view
     }
 }

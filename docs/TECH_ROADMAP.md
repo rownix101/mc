@@ -124,6 +124,12 @@ tracing-subscriber = "0.3"
 - 动态天空：Preetham / Hillaire LUT，sun + fog 统一 uniform。
 - 阴影：CSM 近景软阴影，远景只做高度雾 + aerial perspective。
 - 先做 `flood-fill sky/block light + GTAO`，体积雾用半分辨率 raymarch 后叠加。
+- 已实现 (GI 阶段 A)：`src/world/light.rs` 逐体素天空/方块光 BFS 洪泛；网格器按顶点平滑后经
+  `Vertex::light` 送进前向着色器调制环境光。`LIGHT_HALO = 16` 保证 chunk 边界光照一致，
+  方块编辑按同一半径失效缓存。
+- 已实现 (GI 阶段 B 第一步)：`src/render/probe.rs` 在网格 worker 上烘焙 24x16x24 的世界空间
+  辐照探针 (SH L1 天空可见度, 16 个 Fibonacci 方向射线), 上传为 Rgba16Float 3D 纹理, 片元
+  着色器按法线重建可见度。仍待做：颜色反弹 / 更高阶 SH、GTAO、把烘焙迁到 compute pass。
 - 体素 GI / SDF GI 放最后 (M8 之后)。
 
 ### 3.7 世界模拟 / 流体 / 材料

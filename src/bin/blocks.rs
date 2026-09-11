@@ -1,6 +1,6 @@
 //! 方块预览: atlas 拼图 + 剖面图.
 //! 用法: `cargo run -r --bin blocks`
-//! 输出: `target/atlas.png` (5x5 tile 网格) + `target/column.png` (陆/滩/海三柱剖面).
+//! 输出: `target/atlas.png` (带 gutter 的 tile 网格) + `target/column.png` (陆/滩/海三柱剖面).
 
 use std::path::Path;
 
@@ -116,8 +116,8 @@ fn main() {
             for px in 0..cw {
                 for py in 0..8u32 {
                     let p = if let Some(t) = tile_img {
-                        let tx = px * 16 / cw;
-                        let ty = py * 16 / 8;
+                        let tx = px * TILE / cw;
+                        let ty = py * TILE / 8;
                         *t.get_pixel(tx, ty)
                     } else {
                         image::Rgba([20, 24, 36, 255])
